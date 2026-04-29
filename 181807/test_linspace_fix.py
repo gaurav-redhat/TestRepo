@@ -2,15 +2,42 @@
 Test: torch.linspace CPU/CUDA Integer Precision Fix
 Issue: https://github.com/pytorch/pytorch/issues/181807
 
-Usage:
+Usage (on Google Colab or any machine with CUDA):
     python test_linspace_fix.py
 """
 
-import torch
+import os
+import subprocess
 import sys
 
 
+def run(cmd):
+    print(f">>> {cmd}")
+    subprocess.run(cmd, shell=True, check=True)
+
+
+def setup():
+    """Clone repos, apply fix, and build PyTorch from source."""
+    if os.path.exists("pytorch-fix"):
+        print("pytorch-fix already exists, skipping setup.")
+        return
+
+    run("git clone https://github.com/gaurav-redhat/TestRepo.git")
+    run("git clone --depth 1 https://github.com/pytorch/pytorch.git pytorch-fix")
+    os.chdir("pytorch-fix")
+    run("git submodule update --init --recursive --depth 1")
+
+    run("cp ../TestRepo/181807/RangeFactories.cu aten/src/ATen/native/cuda/RangeFactories.cu")
+    run("cp ../TestRepo/181807/test_tensor_creation_ops.py test/test_tensor_creation_ops.py")
+    print("Fixed files applied successfully!")
+
+    run("pip install -r requirements.txt")
+    run("python setup.py develop")
+
+
 def test_linspace_cpu_cuda_match(start, end, steps, dtype):
+    import torch
+
     cpu = torch.linspace(start, end, steps, dtype=dtype, device="cpu")
     gpu = torch.linspace(start, end, steps, dtype=dtype, device="cuda").cpu()
 
@@ -27,7 +54,11 @@ def test_linspace_cpu_cuda_match(start, end, steps, dtype):
 
 
 def main():
-    print(f"PyTorch version: {torch.__version__}")
+    setup()
+
+    import torch
+
+    print(f"\nPyTorch version: {torch.__version__}")
     print(f"CUDA available: {torch.cuda.is_available()}")
 
     if not torch.cuda.is_available():
