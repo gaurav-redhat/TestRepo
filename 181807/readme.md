@@ -62,6 +62,75 @@ In `logspace_cuda_out`, apply the same change to both `step` and `scalar_base`:
 
 `arange` and `range` use `acc_type` which maps all integer types to `int64_t` on both backends, so they are already consistent.
 
+## Build PyTorch from source (commands that worked on this server)
+
+CUDA **12.8** at `/usr/local/cuda-12.8`, **Fedora**, system **GCC 11.5** at `/usr/bin/gcc`, **conda** env `pytorch-build` with **Python 3.12**, GPU **H200**.
+
+### 1. Environment
+
+```bash
+conda create -n pytorch-build python=3.12 -y
+conda activate pytorch-build
+pip install cmake ninja pyyaml setuptools
+```
+
+### 2. Sources and fix files
+
+```bash
+cd ~
+git clone https://github.com/gaurav-redhat/TestRepo.git
+git clone --depth 1 https://github.com/pytorch/pytorch.git pytorch-fix
+cd pytorch-fix
+git submodule update --init --recursive --depth 1
+
+cp ../TestRepo/181807/RangeFactories.cu aten/src/ATen/native/cuda/RangeFactories.cu
+cp ../TestRepo/181807/test_tensor_creation_ops.py test/test_tensor_creation_ops.py
+```
+
+### 3. Build env and compile
+
+```bash
+conda activate pytorch-build
+cd ~/pytorch-fix
+
+export CUDA_HOME=/usr/local/cuda-12.8
+export PATH=$CUDA_HOME/bin:$CONDA_PREFIX/bin:/usr/bin:/bin
+
+export CC=/usr/bin/gcc
+export CXX=/usr/bin/g++
+export CUDA_HOST_COMPILER=/usr/bin/gcc
+export CUDACXX=$CUDA_HOME/bin/nvcc
+export CMAKE_CUDA_COMPILER=$CUDA_HOME/bin/nvcc
+
+export CMAKE_CUDA_FLAGS="-allow-unsupported-compiler -Xcompiler -idirafter -Xcompiler /usr/include"
+
+export USE_CUDA=1
+export USE_FLASH_ATTENTION=0
+export USE_MEM_EFF_ATTENTION=0
+export USE_CUDNN=0
+export USE_KINETO=0
+export BUILD_TEST=0
+
+unset CPATH CPLUS_INCLUDE_PATH
+
+pip install -r requirements.txt
+rm -rf build
+$CONDA_PREFIX/bin/python setup.py develop
+```
+
+### 4. Run (same shell or new login)
+
+```bash
+conda activate pytorch-build
+export CUDA_HOME=/usr/local/cuda-12.8
+export LD_LIBRARY_PATH=$CUDA_HOME/targets/x86_64-linux/lib:$CUDA_HOME/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
+python -c "import torch; print(torch.__version__); print('CUDA:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
+python ~/TestRepo/181807/test_linspace_fix.py
+```
+
+---
+
 ## Regression Test
 
 Add to `test/test_tensor_creation_ops.py` inside `class TestTensorCreation`:
@@ -73,16 +142,6 @@ def test_linspace_integral_dtype_matches_cpu(self, device):
     gpu = torch.linspace(3.7, -3, 10, dtype=torch.int64, device=device)
     self.assertEqual(cpu, gpu.cpu())
 ```
-
-## Test on Google Colab
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/gaurav-redhat/TestRepo/blob/main/181807/test_linspace_fix.ipynb)
-
-Click the badge above or open the notebook directly: [test_linspace_fix.ipynb](https://colab.research.google.com/github/gaurav-redhat/TestRepo/blob/main/181807/test_linspace_fix.ipynb)
-
-## Test on Google Colab
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/gaurav-redhat/TestRepo/blob/main/181807/test_linspace_fix.ipynb)
 
 ## Reference
 
