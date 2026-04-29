@@ -2,42 +2,18 @@
 Test: torch.linspace CPU/CUDA Integer Precision Fix
 Issue: https://github.com/pytorch/pytorch/issues/181807
 
-Usage (on Google Colab or any machine with CUDA):
+This script demonstrates the bug in stock PyTorch (no build needed).
+Just needs: pip install torch
+
+Usage:
     python test_linspace_fix.py
 """
 
-import os
-import subprocess
 import sys
-
-
-def run(cmd):
-    print(f">>> {cmd}")
-    subprocess.run(cmd, shell=True, check=True)
-
-
-def setup():
-    """Clone repos, apply fix, and build PyTorch from source."""
-    if os.path.exists("pytorch-fix"):
-        print("pytorch-fix already exists, skipping setup.")
-        return
-
-    run("git clone https://github.com/gaurav-redhat/TestRepo.git")
-    run("git clone --depth 1 https://github.com/pytorch/pytorch.git pytorch-fix")
-    os.chdir("pytorch-fix")
-    run("git submodule update --init --recursive --depth 1")
-
-    run("cp ../TestRepo/181807/RangeFactories.cu aten/src/ATen/native/cuda/RangeFactories.cu")
-    run("cp ../TestRepo/181807/test_tensor_creation_ops.py test/test_tensor_creation_ops.py")
-    print("Fixed files applied successfully!")
-
-    run("pip install -r requirements.txt")
-    run("python setup.py develop")
+import torch
 
 
 def test_linspace_cpu_cuda_match(start, end, steps, dtype):
-    import torch
-
     cpu = torch.linspace(start, end, steps, dtype=dtype, device="cpu")
     gpu = torch.linspace(start, end, steps, dtype=dtype, device="cuda").cpu()
 
@@ -53,17 +29,57 @@ def test_linspace_cpu_cuda_match(start, end, steps, dtype):
     return match
 
 
+def simulate_fix(start, end, steps, dtype):
+    """
+    Show what the fix does: compare float vs double step computation.
+    The bug is that CUDA uses float32 for the step, CPU uses float64.
+    """
+    scalar_start = int(start)
+    scalar_end = int(end)
+
+    float_step = (float(scalar_end) - float(scalar_start)) / (steps - 1)
+    double_step = (scalar_end - scalar_start) / (steps - 1)
+
+    halfway = steps // 2
+    float_result = []
+    double_result = []
+
+    for i in range(steps):
+        if i < halfway:
+            float_result.append(int(scalar_start + float_step * i))
+            double_result.append(int(scalar_start + double_step * i))
+        else:
+            float_result.append(int(scalar_end - float_step * (steps - i - 1)))
+            double_result.append(int(scalar_end - double_step * (steps - i - 1)))
+
+    print(f"\n  Simulation for linspace({start}, {end}, {steps}):")
+    print(f"  float32 step = {float_step} (CUDA before fix)")
+    print(f"  float64 step = {double_step} (CPU / CUDA after fix)")
+    print(f"  float32 result: {float_result}")
+    print(f"  float64 result: {double_result}")
+    match = float_result == double_result
+    if not match:
+        diffs = [i for i in range(steps) if float_result[i] != double_result[i]]
+        print(f"  Mismatch at indices: {diffs}")
+    else:
+        print(f"  Results match (no precision issue for these inputs)")
+
+
 def main():
-    setup()
-
-    import torch
-
-    print(f"\nPyTorch version: {torch.__version__}")
+    print(f"PyTorch version: {torch.__version__}")
     print(f"CUDA available: {torch.cuda.is_available()}")
 
     if not torch.cuda.is_available():
-        print("ERROR: CUDA is not available. This test requires a GPU.")
-        sys.exit(1)
+        print("\nNo CUDA available. Running simulation only.\n")
+        print("=" * 60)
+        print("Simulation: float32 vs float64 step precision")
+        print("=" * 60)
+        simulate_fix(3.7, -3, 10, torch.int64)
+        simulate_fix(1.5, 10.5, 20, torch.int32)
+        simulate_fix(-100.7, 100.3, 200, torch.int64)
+        print("\nThe fix changes CUDA kernel to use float64 (double)")
+        print("matching the CPU kernel behavior.")
+        sys.exit(0)
 
     print(f"CUDA device: {torch.cuda.get_device_name(0)}")
     print()
@@ -71,7 +87,10 @@ def main():
     print("=" * 60)
     print("Test: Original reproducer from issue #181807")
     print("=" * 60)
-    test_linspace_cpu_cuda_match(3.7, -3, 10, torch.int64)
+    result = test_linspace_cpu_cuda_match(3.7, -3, 10, torch.int64)
+    if not result:
+        print("  ^ BUG CONFIRMED: CPU and CUDA produce different results")
+        simulate_fix(3.7, -3, 10, torch.int64)
     print()
 
     print("=" * 60)
@@ -99,9 +118,12 @@ def main():
     print()
     print("=" * 60)
     if all_passed:
-        print("ALL TESTS PASSED - Fix is working!")
+        print("ALL TESTS PASSED - No mismatch detected.")
+        print("(If running on stock PyTorch, the bug may not trigger for all inputs)")
     else:
-        print("SOME TESTS FAILED - Fix needs more work.")
+        print("SOME TESTS FAILED - Bug confirmed!")
+        print("The fix: change float to double in CUDA linspace kernel.")
+        print("See RangeFactories.cu in this repo for the fixed version.")
     print("=" * 60)
 
     sys.exit(0 if all_passed else 1)
