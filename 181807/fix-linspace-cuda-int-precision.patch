@@ -1,0 +1,35 @@
+diff --git a/aten/src/ATen/native/cuda/RangeFactories.cu b/aten/src/ATen/native/cuda/RangeFactories.cu
+index 9d7ead7e498..9388c96a1b4 100644
+--- a/aten/src/ATen/native/cuda/RangeFactories.cu
++++ b/aten/src/ATen/native/cuda/RangeFactories.cu
+@@ -87,8 +87,10 @@ Tensor& linspace_cuda_out(const Scalar& start, const Scalar& end, int64_t steps,
+     AT_DISPATCH_INTEGRAL_TYPES(r.scalar_type(), "linspace_cuda", [&]() {
+       scalar_t scalar_start = start.to<scalar_t>();
+       scalar_t scalar_end = end.to<scalar_t>();
+-      // Cast `end` and `start` to `float`, since range can be larger than scalar_t for integral types
+-      float step = (static_cast<float>(scalar_end) - static_cast<float>(scalar_start)) / (steps - 1);
++      // Use double for the step to match the CPU kernel (RangeFactoriesKernel.cpp). float
++      // loses enough precision that CPU and CUDA can disagree on integer linspace results
++      // for the same start/end/steps (see gh-181807).
++      double step = (static_cast<double>(scalar_end) - static_cast<double>(scalar_start)) / (steps - 1);
+       const int64_t halfway = steps / 2;
+       gpu_kernel_with_index(r, [scalar_start, scalar_end, steps, step, halfway]GPU_LAMBDA(int64_t ind) -> scalar_t {
+         if (ind < halfway) {
+diff --git a/test/test_tensor_creation_ops.py b/test/test_tensor_creation_ops.py
+index 2314b224d3a..aa475c6f98b 100644
+--- a/test/test_tensor_creation_ops.py
++++ b/test/test_tensor_creation_ops.py
+@@ -3110,6 +3110,13 @@ class TestTensorCreation(TestCase):
+         # Test deduction from input parameters.
+         self._test_linspace_logspace_deduction_helper(torch.logspace, device)
+ 
++    @onlyCUDA
++    def test_linspace_integral_dtype_matches_cpu(self, device):
++        # Regression test for gh-181807 (CUDA used float step; CPU uses double).
++        cpu = torch.linspace(3.7, -3, 10, dtype=torch.int64, device="cpu")
++        gpu = torch.linspace(3.7, -3, 10, dtype=torch.int64, device=device)
++        self.assertEqual(cpu, gpu.cpu())
++
+     # The implementation of linspace+logspace goes through a different path
+     # when the steps arg is equal to 0 or 1. For other values of `steps`
+     # they call specialized linspace (or logspace) kernels.
