@@ -38,6 +38,14 @@ In `linspace_cuda_out`, change the integral-type step from `float` to `double`:
 +      double step = (static_cast<double>(scalar_end) - static_cast<double>(scalar_start)) / (steps - 1);
 ```
 
+## Why this change works
+
+For integral output dtypes, each sample is still computed in **floating point** (using `step` and the start/end scalars), then **converted to the integer dtype**. The kernel uses two numerically equivalent formulas (from the start toward the middle, and from the end toward the middle). With a **`float`** step, rounding error is large enough that those two sides can disagree slightly **before** truncation. Truncation to `int64` then snaps values to different integers at some indices (e.g. `0.999…` vs `1.000…` across a boundary).
+
+A **`double`** step matches the **CPU** path: about **15** decimal digits of precision instead of **~7** for `float`, so the intermediate values stay consistent where it matters, and the truncated integers **match CPU**.
+
+The math of `linspace` is unchanged; only the **precision of the scratch computation** for `step` and the chain `scalar ± step * index` is aligned with `RangeFactoriesKernel.cpp` on CPU.
+
 ## Fix for `logspace` (Same pattern, still open)
 
 In `logspace_cuda_out`, apply the same change to both `step` and `scalar_base`:
