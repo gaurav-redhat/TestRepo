@@ -1,0 +1,134 @@
+diff --git a/test/nn/test_pooling.py b/test/nn/test_pooling.py
+index 108a5d0a766..fefbf113a87 100644
+--- a/test/nn/test_pooling.py
++++ b/test/nn/test_pooling.py
+@@ -917,6 +917,24 @@ torch.cuda.synchronize()
+         with self.assertRaisesRegex(RuntimeError, "value cannot be converted to type"):
+             avgpool(inp)
+ 
++    @onlyNativeDeviceTypes
++    def test_LPPool_nan_on_non_integer_norm(self, device):
++        # https://github.com/pytorch/pytorch/issues/184037
++        torch.manual_seed(0)
++        p = 2.3273891720497133
++
++        x = torch.randn(2, 8, 8, 8, device=device)
++        out = torch.nn.LPPool2d(p, kernel_size=3, stride=2)(x)
++        self.assertFalse(out.isnan().any())
++
++        x = torch.randn(2, 8, 16, device=device)
++        out = torch.nn.LPPool1d(p, kernel_size=3, stride=2)(x)
++        self.assertFalse(out.isnan().any())
++
++        x = torch.randn(2, 4, 4, 4, 4, device=device)
++        out = torch.nn.LPPool3d(p, kernel_size=3, stride=2)(x)
++        self.assertFalse(out.isnan().any())
++
+     @onlyNativeDeviceTypes
+     def test_AvgPool2d_empty(self, device):
+         avgpool = torch.nn.AvgPool2d(3, stride=2).to(device)
+diff --git a/torch/csrc/api/include/torch/nn/functional/pooling.h b/torch/csrc/api/include/torch/nn/functional/pooling.h
+index 72aaca76f6f..3cb313cb6d8 100644
+--- a/torch/csrc/api/include/torch/nn/functional/pooling.h
++++ b/torch/csrc/api/include/torch/nn/functional/pooling.h
+@@ -1010,7 +1010,7 @@ inline Tensor lp_pool1d(
+     ExpandingArray<1> stride,
+     bool ceil_mode) {
+   Tensor out = detail::avg_pool1d(
+-      input.pow(norm_type),
++      input.abs().pow(norm_type),
+       kernel_size,
+       stride,
+       /*padding=*/0,
+@@ -1058,7 +1058,7 @@ inline Tensor lp_pool2d(
+   auto kw = (*kernel_size)[0];
+   auto kh = (*kernel_size)[1];
+   Tensor out = detail::avg_pool2d(
+-      input.pow(norm_type),
++      input.abs().pow(norm_type),
+       kernel_size,
+       stride,
+       /*padding=*/0,
+@@ -1108,7 +1108,7 @@ inline Tensor lp_pool3d(
+   auto kw = (*kernel_size)[1];
+   auto kh = (*kernel_size)[2];
+   Tensor out = detail::avg_pool3d(
+-      input.pow(norm_type),
++      input.abs().pow(norm_type),
+       kernel_size,
+       stride,
+       /*padding=*/0,
+diff --git a/torch/nn/functional.py b/torch/nn/functional.py
+index acb877b13a1..65b5555e10a 100644
+--- a/torch/nn/functional.py
++++ b/torch/nn/functional.py
+@@ -1114,10 +1114,10 @@ def lp_pool3d(
+         )
+     kd, kw, kh = _triple(kernel_size)
+     if stride is not None:
+-        out = avg_pool3d(input.pow(norm_type), kernel_size, stride, 0, ceil_mode)
++        out = avg_pool3d(input.abs().pow(norm_type), kernel_size, stride, 0, ceil_mode)
+     else:
+         out = avg_pool3d(
+-            input.pow(norm_type), kernel_size, padding=0, ceil_mode=ceil_mode
++            input.abs().pow(norm_type), kernel_size, padding=0, ceil_mode=ceil_mode
+         )
+ 
+     return (
+@@ -1155,10 +1155,10 @@ def lp_pool2d(
+         )
+     kw, kh = _pair(kernel_size)
+     if stride is not None:
+-        out = avg_pool2d(input.pow(norm_type), kernel_size, stride, 0, ceil_mode)
++        out = avg_pool2d(input.abs().pow(norm_type), kernel_size, stride, 0, ceil_mode)
+     else:
+         out = avg_pool2d(
+-            input.pow(norm_type), kernel_size, padding=0, ceil_mode=ceil_mode
++            input.abs().pow(norm_type), kernel_size, padding=0, ceil_mode=ceil_mode
+         )
+ 
+     return (torch.sign(out) * relu(torch.abs(out))).mul(kw * kh).pow(1.0 / norm_type)
+@@ -1192,10 +1192,10 @@ def lp_pool1d(
+             ceil_mode=ceil_mode,
+         )
+     if stride is not None:
+-        out = avg_pool1d(input.pow(norm_type), kernel_size, stride, 0, ceil_mode)
++        out = avg_pool1d(input.abs().pow(norm_type), kernel_size, stride, 0, ceil_mode)
+     else:
+         out = avg_pool1d(
+-            input.pow(norm_type), kernel_size, padding=0, ceil_mode=ceil_mode
++            input.abs().pow(norm_type), kernel_size, padding=0, ceil_mode=ceil_mode
+         )
+ 
+     return (
+diff --git a/torch/nn/modules/pooling.py b/torch/nn/modules/pooling.py
+index eee701e26ab..304e255ba03 100644
+--- a/torch/nn/modules/pooling.py
++++ b/torch/nn/modules/pooling.py
+@@ -1128,7 +1128,7 @@ class LPPool1d(_LPPoolNd):
+     On each window, the function computed is:
+ 
+     .. math::
+-        f(X) = \sqrt[p]{\sum_{x \in X} x^{p}}
++        f(X) = \sqrt[p]{\sum_{x \in X} |x|^{p}}
+ 
+     - At p = :math:`\infty`, one gets Max Pooling
+     - At p = 1, one gets Sum Pooling (which is proportional to Average Pooling)
+@@ -1175,7 +1175,7 @@ class LPPool2d(_LPPoolNd):
+     On each window, the function computed is:
+ 
+     .. math::
+-        f(X) = \sqrt[p]{\sum_{x \in X} x^{p}}
++        f(X) = \sqrt[p]{\sum_{x \in X} |x|^{p}}
+ 
+     - At p = :math:`\infty`, one gets Max Pooling
+     - At p = 1, one gets Sum Pooling (which is proportional to average pooling)
+@@ -1235,7 +1235,7 @@ class LPPool3d(_LPPoolNd):
+     On each window, the function computed is:
+ 
+     .. math::
+-        f(X) = \sqrt[p]{\sum_{x \in X} x^{p}}
++        f(X) = \sqrt[p]{\sum_{x \in X} |x|^{p}}
+ 
+     - At p = :math:`\infty`, one gets Max Pooling
+     - At p = 1, one gets Sum Pooling (which is proportional to average pooling)
